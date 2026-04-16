@@ -8,6 +8,9 @@ const validate = (schema) => (req, res, next) => {
       query: req.query
     });
     req.validated = parsed;
+    if (parsed.body) req.body = parsed.body;
+    if (parsed.params) req.params = parsed.params;
+    if (parsed.query) req.query = parsed.query;
     return next();
   } catch (err) {
     const errors = err.errors ? err.errors.map((e) => ({ path: e.path, message: e.message })) : undefined;

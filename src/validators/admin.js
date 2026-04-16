@@ -2,41 +2,120 @@ const { z } = require('zod');
 
 const idParam = z.object({ params: z.object({ id: z.string().uuid() }) });
 
+const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
+
+const timeToMinutes = (time) => {
+  if (!time || typeof time !== 'string' || !timeRegex.test(time)) return null;
+  const [h, m] = time.split(':');
+  return Number(h) * 60 + Number(m);
+};
+
 const competitionCreate = z.object({
   body: z.object({
-    code: z.string().min(2),
-    title: z.string().min(2),
+    code: z.string().trim().min(2),
+    title: z.string().trim().min(2),
     description: z.string().optional(),
-    grade: z.string().min(1),
-    subjects: z.array(z.string()).default([]),
-    startDate: z.string().optional(),
-    startTime: z.string().optional(),
-    endTime: z.string().optional(),
-    venue: z.string().optional(),
-    fee: z.number().optional(),
-    registrationDeadline: z.string().optional(),
-    duration: z.string().optional(),
+    grade: z.string().min(1).optional(),
+    gradeMin: z.coerce.number().int().min(1).max(12).optional(),
+    gradeMax: z.coerce.number().int().min(1).max(12).optional(),
+    subjects: z.array(z.string().trim().min(1)).min(1, 'At least one subject is required'),
+    startDate: z.string().date('startDate must be YYYY-MM-DD'),
+    startTime: z.string().regex(timeRegex, 'startTime must be HH:mm'),
+    endTime: z.string().regex(timeRegex, 'endTime must be HH:mm'),
+    venue: z.string().trim().min(2, 'venue is required'),
+    fee: z.coerce.number().min(0, 'fee must be >= 0').optional(),
+    registrationDeadline: z.string().date('registrationDeadline must be YYYY-MM-DD'),
+    duration: z.string().trim().min(1, 'duration is required'),
     status: z.enum(['active','inactive','closed']).optional()
   })
+    .superRefine((val, ctx) => {
+      const hasRange = val.gradeMin !== undefined || val.gradeMax !== undefined;
+      if (hasRange) {
+        if (val.gradeMin === undefined || val.gradeMax === undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradeMin'], message: 'gradeMin and gradeMax are required together' });
+          return;
+        }
+        if (val.gradeMin > val.gradeMax) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradeMin'], message: 'gradeMin must be <= gradeMax' });
+          return;
+        }
+      } else if (!val.grade) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['grade'], message: 'grade is required' });
+      }
+
+      const startMinutes = timeToMinutes(val.startTime);
+      const endMinutes = timeToMinutes(val.endTime);
+      if (startMinutes === null || endMinutes === null) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['startTime'], message: 'Invalid competition time' });
+      } else if (endMinutes <= startMinutes) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['endTime'], message: 'endTime must be after startTime' });
+      }
+
+      const startDate = new Date(`${val.startDate}T00:00:00.000Z`);
+      const deadline = new Date(`${val.registrationDeadline}T00:00:00.000Z`);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(deadline.getTime())) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['registrationDeadline'], message: 'Invalid dates provided' });
+      } else if (deadline > startDate) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['registrationDeadline'], message: 'registrationDeadline cannot be after startDate' });
+      }
+    })
 });
 
 const competitionUpdate = z.object({
   params: z.object({ id: z.string().uuid() }),
   body: z.object({
-    code: z.string().min(2).optional(),
-    title: z.string().min(2).optional(),
+    code: z.string().trim().min(2).optional(),
+    title: z.string().trim().min(2).optional(),
     description: z.string().optional(),
     grade: z.string().min(1).optional(),
-    subjects: z.array(z.string()).optional(),
-    startDate: z.string().optional(),
-    startTime: z.string().optional(),
-    endTime: z.string().optional(),
-    venue: z.string().optional(),
-    fee: z.number().optional(),
-    registrationDeadline: z.string().optional(),
-    duration: z.string().optional(),
+    gradeMin: z.coerce.number().int().min(1).max(12).optional(),
+    gradeMax: z.coerce.number().int().min(1).max(12).optional(),
+    subjects: z.array(z.string().trim().min(1)).optional(),
+    startDate: z.string().date('startDate must be YYYY-MM-DD').optional(),
+    startTime: z.string().regex(timeRegex, 'startTime must be HH:mm').optional(),
+    endTime: z.string().regex(timeRegex, 'endTime must be HH:mm').optional(),
+    venue: z.string().trim().min(2).optional(),
+    fee: z.coerce.number().min(0, 'fee must be >= 0').optional(),
+    registrationDeadline: z.string().date('registrationDeadline must be YYYY-MM-DD').optional(),
+    duration: z.string().trim().min(1).optional(),
     status: z.enum(['active','inactive','closed']).optional()
   })
+    .superRefine((val, ctx) => {
+      const hasRange = val.gradeMin !== undefined || val.gradeMax !== undefined;
+      if (hasRange) {
+        if (val.gradeMin === undefined || val.gradeMax === undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradeMin'], message: 'gradeMin and gradeMax are required together' });
+          return;
+        }
+        if (val.gradeMin > val.gradeMax) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['gradeMin'], message: 'gradeMin must be <= gradeMax' });
+        }
+      }
+
+      if (Array.isArray(val.subjects) && val.subjects.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['subjects'], message: 'At least one subject is required' });
+      }
+
+      if (val.startTime && val.endTime) {
+        const startMinutes = timeToMinutes(val.startTime);
+        const endMinutes = timeToMinutes(val.endTime);
+        if (startMinutes === null || endMinutes === null) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['startTime'], message: 'Invalid competition time' });
+        } else if (endMinutes <= startMinutes) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['endTime'], message: 'endTime must be after startTime' });
+        }
+      }
+
+      if (val.startDate && val.registrationDeadline) {
+        const startDate = new Date(`${val.startDate}T00:00:00.000Z`);
+        const deadline = new Date(`${val.registrationDeadline}T00:00:00.000Z`);
+        if (Number.isNaN(startDate.getTime()) || Number.isNaN(deadline.getTime())) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['registrationDeadline'], message: 'Invalid dates provided' });
+        } else if (deadline > startDate) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['registrationDeadline'], message: 'registrationDeadline cannot be after startDate' });
+        }
+      }
+    })
 });
 
 const participants = z.object({

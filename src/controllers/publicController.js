@@ -10,8 +10,23 @@ const listCompetitions = async (req, res, next) => {
     const where = [];
     const params = [];
     if (grade) {
-      params.push(grade);
-      where.push(`grade = $${params.length}`);
+      const gradeInt = Number.parseInt(grade, 10);
+      if (!Number.isNaN(gradeInt)) {
+        params.push(gradeInt);
+        const gIdx = params.length;
+        where.push(`(
+          ($${gIdx} BETWEEN grade_min AND grade_max)
+          OR (
+            grade_min IS NULL AND grade_max IS NULL AND (
+              (grade ~ '^[0-9]+$' AND grade::int = $${gIdx})
+              OR (grade ~ '^[0-9]+\\s*-\\s*[0-9]+$' AND $${gIdx} BETWEEN trim(split_part(grade, '-', 1))::int AND trim(split_part(grade, '-', 2))::int)
+            )
+          )
+        )`);
+      } else {
+        params.push(String(grade));
+        where.push(`grade = $${params.length}`);
+      }
     }
     if (status) {
       params.push(status);
@@ -47,8 +62,23 @@ const searchCompetitions = async (req, res, next) => {
     const params = [`%${q}%`];
 
     if (grade) {
-      params.push(grade);
-      where.push(`grade = $${params.length}`);
+      const gradeInt = Number.parseInt(grade, 10);
+      if (!Number.isNaN(gradeInt)) {
+        params.push(gradeInt);
+        const gIdx = params.length;
+        where.push(`(
+          ($${gIdx} BETWEEN grade_min AND grade_max)
+          OR (
+            grade_min IS NULL AND grade_max IS NULL AND (
+              (grade ~ '^[0-9]+$' AND grade::int = $${gIdx})
+              OR (grade ~ '^[0-9]+\\s*-\\s*[0-9]+$' AND $${gIdx} BETWEEN trim(split_part(grade, '-', 1))::int AND trim(split_part(grade, '-', 2))::int)
+            )
+          )
+        )`);
+      } else {
+        params.push(String(grade));
+        where.push(`grade = $${params.length}`);
+      }
     }
     if (subject) {
       params.push(subject);
@@ -74,7 +104,7 @@ const searchCompetitions = async (req, res, next) => {
 const competitionDetail = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const result = await query('SELECT * FROM competitions WHERE id = $1 OR code = $1', [id]);
+    const result = await query('SELECT * FROM competitions WHERE code = $1 OR id::text = $1', [id]);
     if (result.rowCount === 0) {
       return fail(res, 404, 'Competition not found');
     }

@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS competitions (
   title TEXT NOT NULL,
   description TEXT,
   grade TEXT NOT NULL,
+  grade_min INT,
+  grade_max INT,
   subjects TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   start_date DATE,
   start_time TIME,
@@ -58,6 +60,31 @@ CREATE TABLE IF NOT EXISTS competitions (
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Backward-compatible migration: existing DBs may already have competitions(grade)
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS grade_min INT;
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS grade_max INT;
+
+-- Best-effort backfill from grade text when it looks like "8" or "1-8"
+UPDATE competitions
+SET
+  grade_min = COALESCE(
+    grade_min,
+    CASE
+      WHEN grade ~ '^[0-9]+$' THEN grade::int
+      WHEN grade ~ '^[0-9]+\\s*-\\s*[0-9]+$' THEN trim(split_part(grade, '-', 1))::int
+      ELSE NULL
+    END
+  ),
+  grade_max = COALESCE(
+    grade_max,
+    CASE
+      WHEN grade ~ '^[0-9]+$' THEN grade::int
+      WHEN grade ~ '^[0-9]+\\s*-\\s*[0-9]+$' THEN trim(split_part(grade, '-', 2))::int
+      ELSE NULL
+    END
+  )
+WHERE grade_min IS NULL OR grade_max IS NULL;
 
 CREATE TABLE IF NOT EXISTS competition_participants (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -100,4 +127,6 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_students_school_id ON students(school_id);
 CREATE INDEX IF NOT EXISTS idx_competitions_status ON competitions(status);
 CREATE INDEX IF NOT EXISTS idx_competitions_grade ON competitions(grade);
+CREATE INDEX IF NOT EXISTS idx_competitions_grade_min ON competitions(grade_min);
+CREATE INDEX IF NOT EXISTS idx_competitions_grade_max ON competitions(grade_max);
 CREATE INDEX IF NOT EXISTS idx_participants_competition_id ON competition_participants(competition_id);

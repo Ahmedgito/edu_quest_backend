@@ -2,6 +2,21 @@ const bcrypt = require('bcryptjs');
 const { query, pool } = require('./index');
 const { env } = require('../config/env');
 
+const gradeToRange = (grade) => {
+  const raw = String(grade || '').trim();
+  if (/^\\d+$/.test(raw)) {
+    const g = Number(raw);
+    return { gradeText: raw, gradeMin: g, gradeMax: g };
+  }
+  const m = raw.match(/^(\\d+)\\s*-\\s*(\\d+)$/);
+  if (m) {
+    const min = Number(m[1]);
+    const max = Number(m[2]);
+    return { gradeText: min === max ? String(min) : `${min}-${max}`, gradeMin: min, gradeMax: max };
+  }
+  return { gradeText: raw, gradeMin: null, gradeMax: null };
+};
+
 const seed = async () => {
   const adminPassword = env.adminPassword || 'Admin@12345';
   const hash = await bcrypt.hash(adminPassword, env.bcryptSaltRounds);
@@ -93,10 +108,21 @@ const seed = async () => {
     if (existing.rowCount > 0) {
       continue;
     }
+    const gradeInfo = gradeToRange(comp.grade);
     await query(
-      `INSERT INTO competitions (code, title, description, grade, subjects, venue, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [comp.code, comp.title, `${comp.title} description`, comp.grade, comp.subjects, comp.venue, comp.status]
+      `INSERT INTO competitions (code, title, description, grade, grade_min, grade_max, subjects, venue, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        comp.code,
+        comp.title,
+        `${comp.title} description`,
+        gradeInfo.gradeText,
+        gradeInfo.gradeMin,
+        gradeInfo.gradeMax,
+        comp.subjects,
+        comp.venue,
+        comp.status
+      ]
     );
   }
 

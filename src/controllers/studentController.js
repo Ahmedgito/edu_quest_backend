@@ -59,11 +59,23 @@ const availableCompetitions = async (req, res, next) => {
     }
 
     const { class: grade } = profileResult.rows[0];
+    const gradeInt = Number.parseInt(String(grade), 10);
+    if (Number.isNaN(gradeInt)) {
+      return fail(res, 400, 'Invalid student grade');
+    }
     const { search, subject } = req.query;
     const { page, limit, offset } = getPagination(req.query);
 
-    const params = [grade];
-    let where = `WHERE c.grade = $1 AND c.status = 'active'`;
+    const params = [gradeInt];
+    let where = `WHERE c.status = 'active' AND (
+      ($1 BETWEEN c.grade_min AND c.grade_max)
+      OR (
+        c.grade_min IS NULL AND c.grade_max IS NULL AND (
+          (c.grade ~ '^[0-9]+$' AND c.grade::int = $1)
+          OR (c.grade ~ '^[0-9]+\\s*-\\s*[0-9]+$' AND $1 BETWEEN trim(split_part(c.grade, '-', 1))::int AND trim(split_part(c.grade, '-', 2))::int)
+        )
+      )
+    )`;
 
     if (search) {
       params.push(`%${search}%`);
@@ -116,12 +128,13 @@ const joinCompetition = async (req, res, next) => {
     }
 
     const student = studentResult.rows[0];
-    const competitionResult = await query('SELECT * FROM competitions WHERE id = $1', [id]);
+    const competitionResult = await query('SELECT * FROM competitions WHERE code = $1 OR id::text = $1', [id]);
     if (competitionResult.rowCount === 0) {
       return fail(res, 404, 'Competition not found');
     }
 
     const competition = competitionResult.rows[0];
+    const competitionId = competition.id;
     if (competition.status !== 'active') {
       return fail(res, 400, 'Competition is not open');
     }
@@ -130,13 +143,34 @@ const joinCompetition = async (req, res, next) => {
       return fail(res, 400, 'Registration deadline has passed');
     }
 
-    if (competition.grade !== student.class) {
-      return fail(res, 400, 'You are not eligible for this competition');
+    const studentGradeInt = Number.parseInt(String(student.class), 10);
+    if (Number.isNaN(studentGradeInt)) {
+      return fail(res, 400, 'Invalid student grade');
+    }
+
+    let min = competition.grade_min;
+    let max = competition.grade_max;
+    if (min == null || max == null) {
+      const raw = String(competition.grade || '').trim();
+      const single = raw.match(/^\\d+$/);
+      const range = raw.match(/^(\\d+)\\s*-\\s*(\\d+)$/);
+      if (single) {
+        min = Number(raw);
+        max = Number(raw);
+      } else if (range) {
+        min = Number(range[1]);
+        max = Number(range[2]);
+      }
+    }
+
+    if (min == null || max == null || studentGradeInt < min || studentGradeInt > max) {
+      const eligibleText = min != null && max != null ? (min === max ? `Grade ${min}` : `Grades ${min}-${max}`) : 'the eligible grade level';
+      return fail(res, 400, `You are not eligible for this competition. Eligible: ${eligibleText}`);
     }
 
     const existing = await query(
       'SELECT id FROM competition_participants WHERE competition_id = $1 AND student_id = $2',
-      [id, student.id]
+      [competitionId, student.id]
     );
     if (existing.rowCount > 0) {
       return ok(res, { alreadyJoined: true }, 'Already joined');
@@ -144,10 +178,10 @@ const joinCompetition = async (req, res, next) => {
 
     await query(
       'INSERT INTO competition_participants (competition_id, student_id) VALUES ($1, $2)',
-      [id, student.id]
+      [competitionId, student.id]
     );
 
-    return ok(res, { competitionId: id }, 'Registration successful');
+    return ok(res, { competitionId }, 'Registration successful');
   } catch (err) {
     return next(err);
   }
