@@ -54,7 +54,7 @@ const registerSchool = async (req, res, next) => {
       [user.id, schoolName, coordinatorName, designation, principalName, principalEmail, branchName, city]
     );
 
-    return created(res, { id: user.id, email: user.email, role: user.role, status: 'pending' }, 'School registered. Awaiting approval.');
+    return created(res, { id: user.id, email: user.email, role: user.role, status: 'pending' }, 'School registered. Please wait a few minutes for approval.');
   } catch (err) {
     return next(err);
   }
@@ -79,8 +79,8 @@ const login = async (req, res, next) => {
       const schoolResult = await query('SELECT status FROM schools WHERE user_id = $1', [user.id]);
       const status = schoolResult.rows[0]?.status || 'pending';
       if (status !== 'approved') {
-        return fail(res, 403, 'School account awaiting approval');
-      }
+        return fail(res, 403, 'School account awaiting approval.Please wait a few minutes for approval.');
+      } 
     }
 
     // Onboarding state (students created via bulk upload must change password + complete profile)
