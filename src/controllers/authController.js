@@ -63,7 +63,7 @@ const registerSchool = async (req, res, next) => {
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    const result = await query('SELECT id, email, password_hash, role FROM users WHERE email = $1', [email]);
+    const result = await query('SELECT id, email, password_hash, role, must_change_password FROM users WHERE email = $1', [email]);
 
     if (result.rowCount === 0) {
       return fail(res, 401, 'Invalid credentials');
@@ -83,6 +83,13 @@ const login = async (req, res, next) => {
       }
     }
 
+    // Onboarding state (students created via bulk upload must change password + complete profile)
+    let profileCompleted = true;
+    if (user.role === 'student') {
+      const studentResult = await query('SELECT profile_completed FROM students WHERE user_id = $1', [user.id]);
+      profileCompleted = studentResult.rows[0]?.profile_completed ?? true;
+    }
+
     const token = signAccessToken({ id: user.id, role: user.role, email: user.email });
     const refreshToken = signRefreshToken({ id: user.id, role: user.role });
 
@@ -91,7 +98,17 @@ const login = async (req, res, next) => {
       [user.id, refreshToken]
     );
 
-    return ok(res, { token, refreshToken, user: { id: user.id, email: user.email, role: user.role } }, 'Login successful');
+    return ok(res, {
+      token,
+      refreshToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        mustChangePassword: Boolean(user.must_change_password),
+        profileCompleted
+      }
+    }, 'Login successful');
   } catch (err) {
     return next(err);
   }

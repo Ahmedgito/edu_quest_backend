@@ -1,6 +1,8 @@
 const { query } = require('../db');
 const { ok, created, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
+const { getBandForCategory } = require('../utils/gradeCategory');
+const { sendCertificateEmailsBatched } = require('../services/competitionCertificateEmail');
 
 const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
 
@@ -171,7 +173,7 @@ const rejectSchool = async (req, res, next) => {
 
 const listStudents = async (req, res, next) => {
   try {
-    const { schoolId, search, grade, source } = req.query;
+    const { schoolId, search, grade, category, source } = req.query;
     const { page, limit, offset } = getPagination(req.query);
 
     const where = [];
@@ -179,6 +181,17 @@ const listStudents = async (req, res, next) => {
 
     if (source && !['school_bulk', 'individual'].includes(source)) {
       return fail(res, 400, 'Invalid source filter. Use school_bulk or individual');
+    }
+
+    if (category) {
+      const band = getBandForCategory(category);
+      if (!band) {
+        return fail(res, 400, 'Invalid category filter');
+      }
+      params.push(band.min, band.max);
+      where.push(
+        `(s.class ~ '^[0-9]+$' AND s.class::int BETWEEN $${params.length - 1} AND $${params.length})`
+      );
     }
 
     if (schoolId) {
@@ -305,6 +318,97 @@ const createCompetition = async (req, res, next) => {
       ]
     );
     return created(res, result.rows[0], 'Competition created');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+const listCertificateEligibleCompetitions = async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT
+        c.*,
+        COUNT(cp.id)::int AS participant_count,
+        COUNT(cp.id) FILTER (WHERE cp.certificate_sent_at IS NULL)::int AS pending_certificate_count
+      FROM competitions c
+      INNER JOIN competition_participants cp ON cp.competition_id = c.id
+      WHERE c.start_date IS NOT NULL AND c.start_date < CURRENT_DATE
+      GROUP BY c.id
+      ORDER BY c.start_date DESC NULLS LAST`
+    );
+    return ok(res, result.rows);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+const sendCompetitionCertificates = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { studentIds } = req.body || {};
+
+    const compRes = await query('SELECT * FROM competitions WHERE id = $1', [id]);
+    if (compRes.rowCount === 0) {
+      return fail(res, 404, 'Competition not found');
+    }
+    const competition = compRes.rows[0];
+
+    if (!competition.start_date) {
+      return fail(res, 400, 'Competition has no event date; cannot send certificates');
+    }
+
+    const endedCheck = await query('SELECT ($1::date < CURRENT_DATE) AS ended', [competition.start_date]);
+    if (!endedCheck.rows[0]?.ended) {
+      return fail(res, 400, 'Competition has not ended yet (event date is still today or in the future)');
+    }
+
+    let pendingSql = `
+      SELECT cp.student_id, s.name, s.email
+      FROM competition_participants cp
+      JOIN students s ON s.id = cp.student_id
+      WHERE cp.competition_id = $1
+        AND cp.certificate_sent_at IS NULL
+    `;
+    const params = [id];
+    if (Array.isArray(studentIds) && studentIds.length > 0) {
+      params.push(studentIds);
+      pendingSql += ` AND cp.student_id = ANY($2::uuid[])`;
+    }
+    pendingSql += ' ORDER BY cp.joined_at ASC';
+
+    const pending = await query(pendingSql, params);
+    if (pending.rowCount === 0) {
+      return ok(res, { sent: 0, failed: [], sentStudentIds: [] }, 'No pending certificate emails for selected participants');
+    }
+
+    let sendResult;
+    try {
+      sendResult = await sendCertificateEmailsBatched({ competition, rows: pending.rows });
+    } catch (err) {
+      if (err.code === 'SMTP_NOT_CONFIGURED') {
+        return fail(res, 503, err.message);
+      }
+      throw err;
+    }
+
+    if (sendResult.sentStudentIds.length > 0) {
+      await query(
+        `UPDATE competition_participants
+         SET certificate_sent_at = NOW()
+         WHERE competition_id = $1 AND student_id = ANY($2::uuid[])`,
+        [id, sendResult.sentStudentIds]
+      );
+    }
+
+    return ok(
+      res,
+      {
+        sent: sendResult.sentStudentIds.length,
+        failed: sendResult.failures,
+        sentStudentIds: sendResult.sentStudentIds
+      },
+      'Certificate emails processed'
+    );
   } catch (err) {
     return next(err);
   }
@@ -444,7 +548,7 @@ const competitionParticipants = async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
-      `SELECT cp.student_id, s.name, s.email, s.class, cp.joined_at
+      `SELECT cp.student_id, s.name, s.email, s.class, s.school_name, cp.joined_at, cp.certificate_sent_at
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
        WHERE cp.competition_id = $1
@@ -483,6 +587,8 @@ module.exports = {
   deleteStudent,
   createCompetition,
   listCompetitions,
+  listCertificateEligibleCompetitions,
+  sendCompetitionCertificates,
   getCompetition,
   updateCompetition,
   deleteCompetition,

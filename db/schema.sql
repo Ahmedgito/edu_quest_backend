@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS competitions (
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- Onboarding: bulk-created students must set a password and complete their profile on first login
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS profile_completed BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS country TEXT;
+
 -- Backward-compatible migration: existing DBs may already have competitions(grade)
 ALTER TABLE competitions ADD COLUMN IF NOT EXISTS grade_min INT;
 ALTER TABLE competitions ADD COLUMN IF NOT EXISTS grade_max INT;
@@ -91,8 +96,44 @@ CREATE TABLE IF NOT EXISTS competition_participants (
   competition_id UUID NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
   joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  certificate_sent_at TIMESTAMPTZ,
   UNIQUE (competition_id, student_id)
 );
+
+-- Existing databases: add certificate tracking column
+ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS certificate_sent_at TIMESTAMPTZ;
+
+-- Audit trail + idempotency for bulk student registration uploads
+CREATE TABLE IF NOT EXISTS bulk_registration_batches (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  uploaded_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  filename TEXT,
+  file_hash TEXT NOT NULL,
+  total_records INT NOT NULL DEFAULT 0,
+  successful_registrations INT NOT NULL DEFAULT 0,
+  failed_registrations INT NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing','completed','partial','failed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS bulk_registration_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  batch_id UUID NOT NULL REFERENCES bulk_registration_batches(id) ON DELETE CASCADE,
+  row_number INT,
+  email TEXT,
+  name TEXT,
+  grade TEXT,
+  status TEXT NOT NULL CHECK (status IN ('created','skipped_duplicate','failed')),
+  error TEXT,
+  student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bulk_batches_school ON bulk_registration_batches(school_id);
+CREATE INDEX IF NOT EXISTS idx_bulk_batches_hash ON bulk_registration_batches(school_id, file_hash);
+CREATE INDEX IF NOT EXISTS idx_bulk_records_batch ON bulk_registration_records(batch_id);
 
 CREATE TABLE IF NOT EXISTS contact_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

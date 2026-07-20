@@ -9,6 +9,12 @@ const listCompetitions = async (req, res, next) => {
 
     const where = [];
     const params = [];
+    // Hide competitions that are already over (event date passed, or deadline
+    // passed when there is no event date). Passed-out competitions never surface.
+    where.push(`NOT (
+      (start_date IS NOT NULL AND start_date < CURRENT_DATE)
+      OR (start_date IS NULL AND registration_deadline IS NOT NULL AND registration_deadline < CURRENT_DATE)
+    )`);
     if (grade) {
       const gradeInt = Number.parseInt(grade, 10);
       if (!Number.isNaN(gradeInt)) {
@@ -60,6 +66,12 @@ const searchCompetitions = async (req, res, next) => {
 
     const where = ['(title ILIKE $1 OR code ILIKE $1)'];
     const params = [`%${q}%`];
+
+    // Hide competitions that are already over (see listCompetitions).
+    where.push(`NOT (
+      (start_date IS NOT NULL AND start_date < CURRENT_DATE)
+      OR (start_date IS NULL AND registration_deadline IS NOT NULL AND registration_deadline < CURRENT_DATE)
+    )`);
 
     if (grade) {
       const gradeInt = Number.parseInt(grade, 10);

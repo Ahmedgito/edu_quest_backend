@@ -1,4 +1,6 @@
+const bcrypt = require('bcryptjs');
 const { query } = require('../db');
+const { env } = require('../config/env');
 const { ok, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
 
@@ -13,6 +15,47 @@ const getProfile = async (req, res, next) => {
       return fail(res, 404, 'Profile not found');
     }
     return ok(res, result.rows[0]);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+// First-login step 1: replace the temporary bulk password with the student's own.
+const setPassword = async (req, res, next) => {
+  try {
+    const { newPassword } = req.body;
+    const hash = await bcrypt.hash(newPassword, env.bcryptSaltRounds);
+    await query(
+      'UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = NOW() WHERE id = $2',
+      [hash, req.user.id]
+    );
+    return ok(res, { mustChangePassword: false }, 'Password updated');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+// First-login step 2: fill in the profile fields collected at individual registration.
+const completeProfile = async (req, res, next) => {
+  try {
+    const { name, class: grade, schoolName, city, whatsappNumber, country } = req.body;
+    const result = await query(
+      `UPDATE students SET
+         name = COALESCE($1, name),
+         class = COALESCE($2, class),
+         school_name = COALESCE($3, school_name),
+         city = COALESCE($4, city),
+         whatsapp_number = COALESCE($5, whatsapp_number),
+         country = COALESCE($6, country),
+         profile_completed = TRUE,
+         updated_at = NOW()
+       WHERE user_id = $7 RETURNING *`,
+      [name || null, grade || null, schoolName || null, city || null, whatsappNumber || null, country || null, req.user.id]
+    );
+    if (result.rowCount === 0) {
+      return fail(res, 404, 'Profile not found');
+    }
+    return ok(res, result.rows[0], 'Profile completed');
   } catch (err) {
     return next(err);
   }
@@ -67,7 +110,11 @@ const availableCompetitions = async (req, res, next) => {
     const { page, limit, offset } = getPagination(req.query);
 
     const params = [gradeInt];
-    let where = `WHERE c.status = 'active' AND (
+    let where = `WHERE c.status = 'active'
+      -- Only competitions still open for registration: deadline not passed and event not over
+      AND (c.registration_deadline IS NULL OR c.registration_deadline >= CURRENT_DATE)
+      AND (c.start_date IS NULL OR c.start_date >= CURRENT_DATE)
+      AND (
       ($1 BETWEEN c.grade_min AND c.grade_max)
       OR (
         c.grade_min IS NULL AND c.grade_max IS NULL AND (
@@ -143,6 +190,10 @@ const joinCompetition = async (req, res, next) => {
       return fail(res, 400, 'Registration deadline has passed');
     }
 
+    if (competition.start_date && new Date(competition.start_date) < new Date(new Date().toDateString())) {
+      return fail(res, 400, 'This competition has already taken place');
+    }
+
     const studentGradeInt = Number.parseInt(String(student.class), 10);
     if (Number.isNaN(studentGradeInt)) {
       return fail(res, 400, 'Invalid student grade');
@@ -189,6 +240,8 @@ const joinCompetition = async (req, res, next) => {
 
 module.exports = {
   getProfile,
+  setPassword,
+  completeProfile,
   updateProfile,
   myCompetitions,
   availableCompetitions,

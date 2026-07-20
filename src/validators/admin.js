@@ -122,4 +122,14 @@ const participants = z.object({
   params: z.object({ id: z.string().uuid(), studentId: z.string().uuid().optional() })
 });
 
-module.exports = { idParam, competitionCreate, competitionUpdate, participants };
+const sendCertificates = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.preprocess(
+    (data) => (data && typeof data === 'object' ? data : {}),
+    z.object({
+      studentIds: z.array(z.string().uuid()).optional()
+    })
+  )
+});
+
+module.exports = { idParam, competitionCreate, competitionUpdate, participants, sendCertificates };

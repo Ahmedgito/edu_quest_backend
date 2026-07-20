@@ -5,9 +5,18 @@ const registerIndividual = z.object({
     email: z.string().email(),
     password: z.string().min(6),
     confirmPassword: z.string().min(6),
-    class: z.string().min(1),
+    class: z
+      .union([z.string(), z.number()])
+      .transform((v) => String(v).trim())
+      .refine((v) => /^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= 12, {
+        message: 'Grade must be a number between 1 and 12'
+      }),
     schoolName: z.string().optional().nullable(),
-    whatsappNumber: z.string().optional().nullable(),
+    whatsappNumber: z
+      .string()
+      .trim()
+      .min(1, 'WhatsApp number is required')
+      .regex(/^\+?[0-9]{7,15}$/, 'Invalid WhatsApp number'),
     country: z.string().optional().nullable(),
     city: z.string().optional().nullable()
   }).refine((data) => data.password === data.confirmPassword, {
