@@ -127,9 +127,43 @@ const sendCertificates = z.object({
   body: z.preprocess(
     (data) => (data && typeof data === 'object' ? data : {}),
     z.object({
-      studentIds: z.array(z.string().uuid()).optional()
+      studentIds: z.array(z.string().uuid()).optional(),
+      // 'winners' = podium only, 'participation' = everyone without a podium
+      scope: z.enum(['all', 'winners', 'participation']).optional(),
+      resend: z.boolean().optional()
     })
   )
 });
 
-module.exports = { idParam, competitionCreate, competitionUpdate, participants, sendCertificates };
+const setWinners = z.object({
+  params: z.object({ id: z.string().uuid() }),
+  body: z.preprocess(
+    (data) => (data && typeof data === 'object' ? data : {}),
+    z.object({
+      // null / omitted clears the position
+      first: z.string().uuid('first must be a student id').nullable().optional(),
+      second: z.string().uuid('second must be a student id').nullable().optional(),
+      third: z.string().uuid('third must be a student id').nullable().optional()
+    })
+  )
+});
+
+const announcementUpdate = z.object({
+  body: z.object({
+    enabled: z.boolean().optional(),
+    heading: z.string().trim().min(1, 'heading is required').max(120).optional(),
+    // null = feature the next upcoming competition automatically
+    competitionId: z.string().uuid('competitionId must be a competition id').nullable().optional(),
+    ctaLabel: z.string().trim().min(1, 'Button label is required').max(60).optional()
+  })
+});
+
+module.exports = {
+  idParam,
+  competitionCreate,
+  competitionUpdate,
+  participants,
+  sendCertificates,
+  setWinners,
+  announcementUpdate
+};

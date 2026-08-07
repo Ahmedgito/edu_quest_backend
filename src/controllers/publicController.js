@@ -1,6 +1,7 @@
 const { query } = require('../db');
 const { ok, created, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
+const { resolveFeaturedCompetition } = require('../utils/featuredCompetition');
 
 const listCompetitions = async (req, res, next) => {
   try {
@@ -126,6 +127,39 @@ const competitionDetail = async (req, res, next) => {
   }
 };
 
+/**
+ * Announcement banner shown to visitors. The content is always a real
+ * competition: the admin either pins one or leaves it on auto, in which case the
+ * soonest upcoming competition is featured.
+ *
+ * Returns `null` when the banner is switched off or when there is no competition
+ * to announce, so disabled/empty content never reaches the public site.
+ */
+const announcementBanner = async (req, res, next) => {
+  try {
+    const bannerResult = await query('SELECT * FROM announcement_banner WHERE id = 1');
+    const banner = bannerResult.rows[0];
+    if (!banner || !banner.enabled) {
+      return ok(res, null);
+    }
+
+    const competition = await resolveFeaturedCompetition(banner.competition_id);
+    if (!competition) {
+      return ok(res, null);
+    }
+
+    return ok(res, {
+      enabled: banner.enabled,
+      heading: banner.heading,
+      ctaLabel: banner.cta_label,
+      updatedAt: banner.updated_at,
+      competition
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
 const contact = async (req, res, next) => {
   try {
     const { firstName, lastName, email, phone, subject, message } = req.body;
@@ -140,4 +174,4 @@ const contact = async (req, res, next) => {
   }
 };
 
-module.exports = { listCompetitions, searchCompetitions, competitionDetail, contact };
+module.exports = { listCompetitions, searchCompetitions, competitionDetail, announcementBanner, contact };

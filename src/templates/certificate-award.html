@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Certificate of Achievement</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 32px;
+      font-family: Georgia, "Times New Roman", serif;
+      background: #f4f4f5;
+      color: #1f2937;
+    }
+    .frame {
+      max-width: 640px;
+      margin: 0 auto;
+      background: #fffdf5;
+      border: 8px double {{awardColor}};
+      border-radius: 4px;
+      padding: 48px 40px;
+      text-align: center;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    }
+    .ribbon {
+      font-size: 12px;
+      letter-spacing: 0.35em;
+      text-transform: uppercase;
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 400;
+      margin: 0 0 8px;
+      color: #111827;
+    }
+    .award {
+      display: inline-block;
+      margin: 0 0 24px;
+      padding: 8px 22px;
+      border: 2px solid {{awardColor}};
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: {{awardColor}};
+    }
+    .name {
+      font-size: 32px;
+      font-weight: 700;
+      color: #4f46e5;
+      margin: 16px 0 32px;
+      line-height: 1.2;
+    }
+    .details {
+      font-size: 15px;
+      line-height: 1.7;
+      color: #374151;
+      margin: 0 auto;
+      max-width: 420px;
+    }
+    .details strong {
+      color: #111827;
+    }
+    .footer {
+      margin-top: 40px;
+      padding-top: 24px;
+      border-top: 1px solid #e5e7eb;
+      font-size: 12px;
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <div class="ribbon">EduQuest</div>
+    <h1>Certificate of Achievement</h1>
+    <div class="award">{{awardLabel}}</div>
+    <p style="font-size: 16px; margin: 0 0 8px;">This certifies that</p>
+    <div class="name">{{studentName}}</div>
+    <p class="details">
+      has been awarded <strong>{{awardLabel}}</strong> in
+      <strong>{{competitionTitle}}</strong>
+      <span style="white-space: nowrap;">(code <strong>{{competitionCode}}</strong>)</span>.
+      <br />
+      <span>Event date: <strong>{{competitionDate}}</strong></span>
+      <br />
+      <span>Venue: <strong>{{venue}}</strong></span>
+    </p>
+    <div class="footer">
+      Congratulations on your outstanding performance.
+      This is an automated message — please retain this email for your records.
+    </div>
+  </div>
+</body>
+</html>

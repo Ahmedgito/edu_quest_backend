@@ -36,10 +36,14 @@ router.post(
   validate(adminSchemas.sendCertificates),
   adminController.sendCompetitionCertificates
 );
+router.put('/competition/:id/winners', validate(adminSchemas.setWinners), adminController.setCompetitionWinners);
 router.get('/competition/:id', validate(adminSchemas.idParam), adminController.getCompetition);
 router.put('/competition/:id', validate(adminSchemas.competitionUpdate), adminController.updateCompetition);
 router.delete('/competition/:id', validate(adminSchemas.idParam), adminController.deleteCompetition);
 router.get('/competition-participants/:id', validate(adminSchemas.idParam), adminController.competitionParticipants);
 router.delete('/competition-participant/:id/:studentId', validate(adminSchemas.participants), adminController.removeParticipant);
+
+router.get('/announcement', adminController.getAnnouncement);
+router.put('/announcement', validate(adminSchemas.announcementUpdate), adminController.updateAnnouncement);
 
 module.exports = router;

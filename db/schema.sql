@@ -103,6 +103,37 @@ CREATE TABLE IF NOT EXISTS competition_participants (
 -- Existing databases: add certificate tracking column
 ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS certificate_sent_at TIMESTAMPTZ;
 
+-- Podium awards. `award` is the admin's assignment (NULL = ordinary participant);
+-- `certificate_type` records which certificate was actually emailed, so a podium
+-- assigned after a participation certificate went out is detected as out of date.
+ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS award TEXT;
+ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS certificate_type TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'competition_participants_award_check') THEN
+    ALTER TABLE competition_participants
+      ADD CONSTRAINT competition_participants_award_check
+      CHECK (award IS NULL OR award IN ('first','second','third'));
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'competition_participants_certificate_type_check') THEN
+    ALTER TABLE competition_participants
+      ADD CONSTRAINT competition_participants_certificate_type_check
+      CHECK (certificate_type IS NULL OR certificate_type IN ('first','second','third','participation'));
+  END IF;
+END$$;
+
+-- One holder per podium position, per competition.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_participants_unique_award
+  ON competition_participants (competition_id, award)
+  WHERE award IS NOT NULL;
+
+-- Certificates sent before award tracking existed were participation certificates.
+UPDATE competition_participants
+SET certificate_type = 'participation'
+WHERE certificate_sent_at IS NOT NULL AND certificate_type IS NULL;
+
 -- Audit trail + idempotency for bulk student registration uploads
 CREATE TABLE IF NOT EXISTS bulk_registration_batches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -146,6 +177,30 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','in_progress','resolved')),
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Site-wide announcement banner. Single row (id = 1) edited from the admin panel.
+-- All announcement content comes from a live competition: `competition_id` pins a
+-- specific one, or NULL means "whichever competition is next up".
+CREATE TABLE IF NOT EXISTS announcement_banner (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  heading TEXT NOT NULL DEFAULT 'IMPORTANT ANNOUNCEMENT',
+  competition_id UUID REFERENCES competitions(id) ON DELETE SET NULL,
+  cta_label TEXT NOT NULL DEFAULT 'View Details',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Existing databases: the banner used to hold hand-typed title/detail text.
+-- Content is now always read from the competitions table, so drop the stale copies.
+ALTER TABLE announcement_banner ADD COLUMN IF NOT EXISTS competition_id UUID REFERENCES competitions(id) ON DELETE SET NULL;
+ALTER TABLE announcement_banner DROP COLUMN IF EXISTS title;
+ALTER TABLE announcement_banner DROP COLUMN IF EXISTS items;
+ALTER TABLE announcement_banner DROP COLUMN IF EXISTS cta_url;
+ALTER TABLE announcement_banner ALTER COLUMN cta_label SET DEFAULT 'View Details';
+UPDATE announcement_banner SET cta_label = 'View Details' WHERE cta_label IS NULL OR btrim(cta_label) = '';
+ALTER TABLE announcement_banner ALTER COLUMN cta_label SET NOT NULL;
+
+INSERT INTO announcement_banner (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
