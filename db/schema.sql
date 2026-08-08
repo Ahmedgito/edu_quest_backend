@@ -178,6 +178,94 @@ CREATE TABLE IF NOT EXISTS contact_messages (
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+-- ============================================================================
+-- PAYMENTS
+--
+-- Payment is manual: the payer transfers to our bank account and uploads a
+-- screenshot, which a human verifies in the admin panel. There is no gateway.
+--
+-- A payment covers one competition and one or more participants:
+--   payer_type = 'student' → one self-registered student paying their own fee
+--   payer_type = 'school'  → a coordinator paying for N of their students at once
+-- ============================================================================
+
+-- Bank details shown to payers. Single row (id = 1), edited by the admin.
+CREATE TABLE IF NOT EXISTS payment_settings (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  bank_name TEXT NOT NULL DEFAULT '',
+  account_title TEXT NOT NULL DEFAULT '',
+  account_number TEXT NOT NULL DEFAULT '',
+  iban TEXT NOT NULL DEFAULT '',
+  branch TEXT NOT NULL DEFAULT '',
+  currency TEXT NOT NULL DEFAULT 'PKR',
+  instructions TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO payment_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  competition_id UUID NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
+  payer_type TEXT NOT NULL CHECK (payer_type IN ('student','school')),
+  -- Exactly one of these is set, matching payer_type (enforced below).
+  student_id UUID REFERENCES students(id) ON DELETE CASCADE,
+  school_id UUID REFERENCES schools(id) ON DELETE CASCADE,
+  submitted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  -- Amount actually claimed by the payer, and the per-head fee at submission
+  -- time, so a later fee change cannot retroactively invalidate a payment.
+  amount NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
+  unit_fee NUMERIC(10,2) NOT NULL DEFAULT 0,
+  student_count INT NOT NULL DEFAULT 1 CHECK (student_count > 0),
+  reference_code TEXT NOT NULL UNIQUE,
+  payer_note TEXT,
+  screenshot_path TEXT NOT NULL,
+  screenshot_mime TEXT NOT NULL,
+  screenshot_size INT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted','verified','rejected')),
+  rejection_reason TEXT,
+  reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT payments_payer_shape CHECK (
+    (payer_type = 'student' AND student_id IS NOT NULL AND school_id IS NULL)
+    OR (payer_type = 'school' AND school_id IS NOT NULL AND student_id IS NULL)
+  ),
+  CONSTRAINT payments_rejection_reason CHECK (
+    status <> 'rejected' OR (rejection_reason IS NOT NULL AND btrim(rejection_reason) <> '')
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+CREATE INDEX IF NOT EXISTS idx_payments_competition ON payments(competition_id);
+CREATE INDEX IF NOT EXISTS idx_payments_school ON payments(school_id);
+CREATE INDEX IF NOT EXISTS idx_payments_student ON payments(student_id);
+
+-- Registration carries its own payment state so eligibility can be read off a
+-- single row. 'not_required' is used for free competitions.
+ALTER TABLE competition_participants
+  ADD COLUMN IF NOT EXISTS payment_status TEXT NOT NULL DEFAULT 'not_required';
+ALTER TABLE competition_participants
+  ADD COLUMN IF NOT EXISTS payment_id UUID REFERENCES payments(id) ON DELETE SET NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'competition_participants_payment_status_check') THEN
+    ALTER TABLE competition_participants
+      ADD CONSTRAINT competition_participants_payment_status_check
+      CHECK (payment_status IN ('not_required','pending_payment','submitted','verified','rejected'));
+  END IF;
+END$$;
+
+CREATE INDEX IF NOT EXISTS idx_participants_payment_status ON competition_participants(payment_status);
+
+-- Only one payment may be in flight (or already accepted) per student per
+-- competition; rejected attempts stay for audit and allow a fresh submission.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_active_per_student
+  ON payments (competition_id, student_id)
+  WHERE payer_type = 'student' AND status IN ('submitted','verified');
+
 -- Site-wide announcement banner. Single row (id = 1) edited from the admin panel.
 -- All announcement content comes from a live competition: `competition_id` pins a
 -- specific one, or NULL means "whichever competition is next up".

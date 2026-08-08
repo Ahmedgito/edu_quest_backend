@@ -130,4 +130,112 @@ const bulkRegistration = async (req, res, next) => {
   }
 };
 
-module.exports = { downloadTemplate, bulkRegistration };
+/**
+ * Roster for the signed-in school: every student it registered, their account
+ * state, and the competitions they are currently entered in.
+ *
+ * "Account status" reflects onboarding, not existence — a bulk-created student
+ * has a login from day one but is only `active` once they have set their own
+ * password and completed their profile.
+ */
+const listSchoolStudents = async (req, res, next) => {
+  try {
+    const schoolResult = await query('SELECT id, school_name FROM schools WHERE user_id = $1', [req.user.id]);
+    if (schoolResult.rowCount === 0) {
+      return fail(res, 404, 'School profile not found');
+    }
+    const school = schoolResult.rows[0];
+
+    const { search, status, grade } = req.query;
+    const params = [school.id];
+    const where = ['s.school_id = $1'];
+
+    if (grade) {
+      params.push(String(grade));
+      where.push(`s.class = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      where.push(`(COALESCE(s.name,'') ILIKE $${params.length} OR s.email ILIKE $${params.length})`);
+    }
+    if (status && ['active', 'pending', 'disabled'].includes(status)) {
+      if (status === 'disabled') {
+        where.push('u.is_active = FALSE');
+      } else if (status === 'pending') {
+        where.push('u.is_active = TRUE AND (u.must_change_password = TRUE OR s.profile_completed = FALSE)');
+      } else {
+        where.push('u.is_active = TRUE AND u.must_change_password = FALSE AND s.profile_completed = TRUE');
+      }
+    }
+
+    const result = await query(
+      `SELECT
+         s.id, s.name, s.email, s.class, s.city, s.whatsapp_number,
+         s.profile_completed, s.created_at,
+         u.is_active, u.must_change_password, u.created_at AS account_created_at,
+         CASE
+           WHEN u.is_active = FALSE THEN 'disabled'
+           WHEN u.must_change_password = TRUE OR s.profile_completed = FALSE THEN 'pending'
+           ELSE 'active'
+         END AS account_status,
+         COALESCE(upcoming.items, '[]'::json) AS competitions,
+         COALESCE(upcoming.active_count, 0) AS active_competitions,
+         COALESCE(upcoming.unpaid_count, 0) AS unpaid_competitions,
+         COALESCE(lifetime.total_count, 0) AS total_competitions
+       FROM students s
+       JOIN users u ON u.id = s.user_id
+       LEFT JOIN LATERAL (
+         SELECT
+           json_agg(json_build_object(
+             'competitionId', c.id,
+             'title', c.title,
+             'code', c.code,
+             'startDate', c.start_date,
+             'fee', c.fee,
+             'paymentStatus', cp.payment_status
+           ) ORDER BY c.start_date ASC) AS items,
+           COUNT(*)::int AS active_count,
+           COUNT(*) FILTER (WHERE cp.payment_status IN ('pending_payment','rejected'))::int AS unpaid_count
+         FROM competition_participants cp
+         JOIN competitions c ON c.id = cp.competition_id
+         WHERE cp.student_id = s.id
+           AND NOT (c.start_date IS NOT NULL AND c.start_date < CURRENT_DATE)
+       ) upcoming ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int AS total_count
+         FROM competition_participants cp
+         WHERE cp.student_id = s.id
+       ) lifetime ON TRUE
+       WHERE ${where.join(' AND ')}
+       ORDER BY COALESCE(NULLIF(BTRIM(s.name), ''), s.email) ASC`,
+      params
+    );
+
+    // Totals describe the whole roster, so the cards do not move when filtering.
+    const summaryResult = await query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE u.is_active = FALSE)::int AS disabled,
+         COUNT(*) FILTER (
+           WHERE u.is_active = TRUE AND (u.must_change_password = TRUE OR s.profile_completed = FALSE)
+         )::int AS pending,
+         COUNT(*) FILTER (
+           WHERE u.is_active = TRUE AND u.must_change_password = FALSE AND s.profile_completed = TRUE
+         )::int AS active
+       FROM students s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.school_id = $1`,
+      [school.id]
+    );
+
+    return ok(res, {
+      school: { id: school.id, name: school.school_name },
+      items: result.rows,
+      summary: summaryResult.rows[0]
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = { downloadTemplate, bulkRegistration, listSchoolStudents };

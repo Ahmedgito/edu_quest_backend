@@ -3,6 +3,7 @@ const { query } = require('../db');
 const { env } = require('../config/env');
 const { ok, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
+const { initialPaymentStatus } = require('./paymentController');
 
 const getProfile = async (req, res, next) => {
   try {
@@ -61,17 +62,86 @@ const completeProfile = async (req, res, next) => {
   }
 };
 
+/**
+ * Update the signed-in student's own profile. Only the fields present in the
+ * body are touched, so the settings screen can send partial updates.
+ *
+ * Email is not editable here (it is the login identity), and a student attached
+ * to a school cannot rewrite their school name — that link is the school's to
+ * manage.
+ */
 const updateProfile = async (req, res, next) => {
   try {
-    const { city, whatsappNumber } = req.body;
-    const result = await query(
-      'UPDATE students SET city = COALESCE($1, city), whatsapp_number = COALESCE($2, whatsapp_number), updated_at = NOW() WHERE user_id = $3 RETURNING *',
-      [city || null, whatsappNumber || null, req.user.id]
-    );
-    if (result.rowCount === 0) {
+    const fields = req.body || {};
+
+    const existing = await query('SELECT id, school_id FROM students WHERE user_id = $1', [req.user.id]);
+    if (existing.rowCount === 0) {
       return fail(res, 404, 'Profile not found');
     }
+    const isSchoolLinked = Boolean(existing.rows[0].school_id);
+
+    const set = [];
+    const params = [];
+    const pushSet = (col, val) => {
+      params.push(val);
+      set.push(`${col} = $${params.length}`);
+    };
+
+    if (fields.name !== undefined) pushSet('name', fields.name);
+    if (fields.class !== undefined) pushSet('class', fields.class);
+    if (fields.city !== undefined) pushSet('city', fields.city);
+    if (fields.country !== undefined) pushSet('country', fields.country || null);
+    if (fields.whatsappNumber !== undefined) pushSet('whatsapp_number', fields.whatsappNumber);
+
+    if (fields.schoolName !== undefined) {
+      if (isSchoolLinked) {
+        return fail(res, 400, 'Your school is managed by your school coordinator and cannot be changed here');
+      }
+      pushSet('school_name', fields.schoolName || null);
+    }
+
+    if (set.length === 0) {
+      return fail(res, 400, 'No valid fields to update');
+    }
+
+    params.push(req.user.id);
+    const result = await query(
+      `UPDATE students SET ${set.join(', ')}, updated_at = NOW() WHERE user_id = $${params.length} RETURNING *`,
+      params
+    );
+
     return ok(res, result.rows[0], 'Profile updated');
+  } catch (err) {
+    return next(err);
+  }
+};
+
+/** Change password from the settings screen — the current one must be proved. */
+const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    const userResult = await query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+    if (userResult.rowCount === 0) {
+      return fail(res, 404, 'User not found');
+    }
+
+    const matches = await bcrypt.compare(currentPassword, userResult.rows[0].password_hash);
+    if (!matches) {
+      return fail(res, 400, 'Current password is incorrect');
+    }
+
+    if (currentPassword === newPassword) {
+      return fail(res, 400, 'New password must be different from the current one');
+    }
+
+    const hash = await bcrypt.hash(newPassword, env.bcryptSaltRounds);
+    await query(
+      'UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = NOW() WHERE id = $2',
+      [hash, req.user.id]
+    );
+
+    return ok(res, { changed: true }, 'Password changed');
   } catch (err) {
     return next(err);
   }
@@ -80,10 +150,11 @@ const updateProfile = async (req, res, next) => {
 const myCompetitions = async (req, res, next) => {
   try {
     const result = await query(
-      `SELECT c.*
+      `SELECT c.*, cp.payment_status, cp.payment_id, p.reference_code, p.rejection_reason
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
        JOIN competitions c ON c.id = cp.competition_id
+       LEFT JOIN payments p ON p.id = cp.payment_id
        WHERE s.user_id = $1
        ORDER BY cp.joined_at DESC`,
       [req.user.id]
@@ -220,19 +291,42 @@ const joinCompetition = async (req, res, next) => {
     }
 
     const existing = await query(
-      'SELECT id FROM competition_participants WHERE competition_id = $1 AND student_id = $2',
+      'SELECT id, payment_status FROM competition_participants WHERE competition_id = $1 AND student_id = $2',
       [competitionId, student.id]
     );
     if (existing.rowCount > 0) {
-      return ok(res, { alreadyJoined: true }, 'Already joined');
+      return ok(
+        res,
+        {
+          alreadyJoined: true,
+          competitionId,
+          fee: Number(competition.fee || 0),
+          paymentStatus: existing.rows[0].payment_status
+        },
+        'Already joined'
+      );
     }
 
+    // The seat is held straight away; a paid competition then waits on the
+    // student's payment screenshot being verified by an admin.
+    const paymentStatus = initialPaymentStatus(competition);
     await query(
-      'INSERT INTO competition_participants (competition_id, student_id) VALUES ($1, $2)',
-      [competitionId, student.id]
+      'INSERT INTO competition_participants (competition_id, student_id, payment_status) VALUES ($1, $2, $3)',
+      [competitionId, student.id, paymentStatus]
     );
 
-    return ok(res, { competitionId }, 'Registration successful');
+    return ok(
+      res,
+      {
+        competitionId,
+        fee: Number(competition.fee || 0),
+        paymentStatus,
+        paymentRequired: paymentStatus === 'pending_payment'
+      },
+      paymentStatus === 'pending_payment'
+        ? 'Registered — submit your payment to confirm your seat'
+        : 'Registration successful'
+    );
   } catch (err) {
     return next(err);
   }
@@ -241,6 +335,7 @@ const joinCompetition = async (req, res, next) => {
 module.exports = {
   getProfile,
   setPassword,
+  changePassword,
   completeProfile,
   updateProfile,
   myCompetitions,

@@ -5,7 +5,9 @@ const { requireRole } = require('../middleware/role');
 const { validate } = require('../middleware/validate');
 const { fail } = require('../utils/response');
 const adminController = require('../controllers/adminController');
+const paymentController = require('../controllers/paymentController');
 const adminSchemas = require('../validators/admin');
+const paymentSchemas = require('../validators/payment');
 
 const certificateSendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -42,6 +44,15 @@ router.put('/competition/:id', validate(adminSchemas.competitionUpdate), adminCo
 router.delete('/competition/:id', validate(adminSchemas.idParam), adminController.deleteCompetition);
 router.get('/competition-participants/:id', validate(adminSchemas.idParam), adminController.competitionParticipants);
 router.delete('/competition-participant/:id/:studentId', validate(adminSchemas.participants), adminController.removeParticipant);
+
+// Payment verification
+router.get('/payments', validate(paymentSchemas.listPayments), paymentController.listPayments);
+router.get('/payment-settings', paymentController.getPaymentSettings);
+router.put('/payment-settings', validate(paymentSchemas.updateSettings), paymentController.updatePaymentSettings);
+router.get('/payment/:id', validate(paymentSchemas.paymentIdParam), paymentController.getPayment);
+router.get('/payment/:id/screenshot', validate(paymentSchemas.paymentIdParam), paymentController.getPaymentScreenshot);
+router.post('/payment/:id/verify', validate(paymentSchemas.paymentIdParam), paymentController.verifyPayment);
+router.post('/payment/:id/reject', validate(paymentSchemas.rejectPayment), paymentController.rejectPayment);
 
 router.get('/announcement', adminController.getAnnouncement);
 router.put('/announcement', validate(adminSchemas.announcementUpdate), adminController.updateAnnouncement);

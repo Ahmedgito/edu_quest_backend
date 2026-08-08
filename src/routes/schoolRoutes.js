@@ -2,7 +2,12 @@ const express = require('express');
 const multer = require('multer');
 const { auth } = require('../middleware/auth');
 const { requireRole } = require('../middleware/role');
+const { validate } = require('../middleware/validate');
 const schoolController = require('../controllers/schoolController');
+const paymentController = require('../controllers/paymentController');
+const paymentSchemas = require('../validators/payment');
+const schoolSchemas = require('../validators/school');
+const { receiveScreenshot } = require('../services/paymentScreenshotStorage');
 
 const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -39,7 +44,23 @@ const router = express.Router();
 
 router.use(auth, requireRole('school'));
 
+router.get('/students', validate(schoolSchemas.listStudents), schoolController.listSchoolStudents);
 router.get('/bulk-registration-template', schoolController.downloadTemplate);
 router.post('/bulk-registration', uploadCsv, schoolController.bulkRegistration);
+
+// Payments — one screenshot can cover many of the school's students.
+router.get('/payment-settings', paymentController.getPaymentSettings);
+router.get('/payments', paymentController.schoolPayments);
+router.get(
+  '/payable-students',
+  validate(paymentSchemas.payableStudents),
+  paymentController.schoolPayableStudents
+);
+router.post(
+  '/payments',
+  receiveScreenshot,
+  validate(paymentSchemas.schoolPayment),
+  paymentController.submitSchoolPayment
+);
 
 module.exports = router;

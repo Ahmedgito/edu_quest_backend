@@ -655,9 +655,11 @@ const competitionParticipants = async (req, res, next) => {
     const { id } = req.params;
     const result = await query(
       `SELECT cp.competition_id, cp.student_id, s.name, s.email, s.class, s.school_name, cp.joined_at,
-              cp.certificate_sent_at, cp.award, cp.certificate_type
+              cp.certificate_sent_at, cp.award, cp.certificate_type,
+              cp.payment_status, p.reference_code AS payment_reference, p.payer_type AS payment_payer_type
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
+       LEFT JOIN payments p ON p.id = cp.payment_id
        WHERE cp.competition_id = $1
        ORDER BY cp.joined_at DESC`,
       [id]
