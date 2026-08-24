@@ -318,3 +318,12 @@ CREATE INDEX IF NOT EXISTS idx_participants_competition_id ON competition_partic
 -- Contest identity artwork attached to a competition (numerava, lexivara, ...).
 -- Stored as a slug; the frontend maps it to the badge image.
 ALTER TABLE competitions ADD COLUMN IF NOT EXISTS logo TEXT;
+
+-- Downloadable study material (syllabus / manual / preparation guide) attached
+-- to a competition. The file itself lives in uploads/materials and is streamed
+-- through the public download route; only its metadata is stored here.
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_path TEXT;
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_name TEXT;
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_mime TEXT;
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_size INT;
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_label TEXT;

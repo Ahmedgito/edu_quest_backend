@@ -2,6 +2,7 @@ const { query } = require('../db');
 const { ok, created, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
 const { resolveFeaturedCompetition } = require('../utils/featuredCompetition');
+const { resolveMaterialPath, materialExists } = require('../services/competitionMaterialStorage');
 
 const listCompetitions = async (req, res, next) => {
   try {
@@ -174,4 +175,51 @@ const contact = async (req, res, next) => {
   }
 };
 
-module.exports = { listCompetitions, searchCompetitions, competitionDetail, announcementBanner, contact };
+/**
+ * Stream a competition's study material to anyone who asks.
+ *
+ * Public by design: the syllabus and preparation guide are what a visitor is
+ * meant to read before deciding to enter. Served as an attachment so a browser
+ * downloads it rather than rendering it in place, and streamed through here
+ * rather than from a static directory so the stored filename stays private and
+ * the file can be revoked by clearing the row.
+ */
+const downloadCompetitionMaterial = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await query(
+      `SELECT material_path, material_name, material_mime
+       FROM competitions WHERE code = $1 OR id::text = $1`,
+      [id]
+    );
+    if (result.rowCount === 0) return fail(res, 404, 'Competition not found');
+
+    const {
+      material_path: storedName,
+      material_name: downloadName,
+      material_mime: mime
+    } = result.rows[0];
+
+    if (!materialExists(storedName)) {
+      return fail(res, 404, 'No material is available for this competition');
+    }
+
+    // Quote the filename: it is sanitised on upload but may still contain spaces.
+    res.setHeader('Content-Type', mime || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadName || 'material'}"`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    return res.sendFile(resolveMaterialPath(storedName));
+  } catch (err) {
+    return next(err);
+  }
+};
+
+module.exports = {
+  listCompetitions,
+  searchCompetitions,
+  competitionDetail,
+  announcementBanner,
+  contact,
+  downloadCompetitionMaterial
+};

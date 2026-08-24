@@ -3,6 +3,12 @@ const { ok, created, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
 const { getBandForCategory } = require('../utils/gradeCategory');
 const { AWARDS, sendCertificateEmailsBatched } = require('../services/competitionCertificateEmail');
+const {
+  saveMaterial,
+  deleteMaterial,
+  MATERIAL_LABELS,
+  DEFAULT_LABEL
+} = require('../services/competitionMaterialStorage');
 
 const AWARD_POSITIONS = ['first', 'second', 'third'];
 
@@ -755,6 +761,68 @@ const updateAnnouncement = async (req, res, next) => {
   }
 };
 
+/**
+ * Attach a downloadable study material file to a competition.
+ *
+ * Upload is its own endpoint rather than part of create/update because those
+ * are JSON and this is multipart, and because a competition must exist before
+ * a file can be hung off it. Replacing an existing file removes the old one so
+ * the upload directory does not accumulate orphans.
+ */
+const uploadCompetitionMaterial = async (req, res, next) => {
+  let saved = null;
+  try {
+    const { id } = req.params;
+
+    const existing = await query('SELECT material_path FROM competitions WHERE id = $1', [id]);
+    if (existing.rowCount === 0) return fail(res, 404, 'Competition not found');
+
+    const requestedLabel = String(req.body?.label || '').trim();
+    const label = MATERIAL_LABELS.includes(requestedLabel) ? requestedLabel : DEFAULT_LABEL;
+
+    saved = await saveMaterial(req.file);
+
+    const result = await query(
+      `UPDATE competitions
+       SET material_path = $1, material_name = $2, material_mime = $3, material_size = $4,
+           material_label = $5, updated_at = NOW()
+       WHERE id = $6 RETURNING *`,
+      [saved.path, saved.name, saved.mime, saved.size, label, id]
+    );
+
+    // Only drop the previous file once the new row is safely committed.
+    const previous = existing.rows[0].material_path;
+    if (previous && previous !== saved.path) await deleteMaterial(previous);
+
+    return ok(res, result.rows[0], 'Material uploaded');
+  } catch (err) {
+    if (saved) await deleteMaterial(saved.path);
+    return next(err);
+  }
+};
+
+/** Detach and delete a competition's material file. */
+const removeCompetitionMaterial = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const existing = await query('SELECT material_path FROM competitions WHERE id = $1', [id]);
+    if (existing.rowCount === 0) return fail(res, 404, 'Competition not found');
+
+    const result = await query(
+      `UPDATE competitions
+       SET material_path = NULL, material_name = NULL, material_mime = NULL,
+           material_size = NULL, material_label = NULL, updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [id]
+    );
+
+    await deleteMaterial(existing.rows[0].material_path);
+    return ok(res, result.rows[0], 'Material removed');
+  } catch (err) {
+    return next(err);
+  }
+};
+
 module.exports = {
   adminDashboard,
   listSchools,
@@ -774,5 +842,7 @@ module.exports = {
   competitionParticipants,
   removeParticipant,
   getAnnouncement,
-  updateAnnouncement
+  updateAnnouncement,
+  uploadCompetitionMaterial,
+  removeCompetitionMaterial
 };

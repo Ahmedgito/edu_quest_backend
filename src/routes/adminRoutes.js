@@ -6,6 +6,7 @@ const { validate } = require('../middleware/validate');
 const { fail } = require('../utils/response');
 const adminController = require('../controllers/adminController');
 const paymentController = require('../controllers/paymentController');
+const { receiveMaterial } = require('../services/competitionMaterialStorage');
 const adminSchemas = require('../validators/admin');
 const paymentSchemas = require('../validators/payment');
 
@@ -42,6 +43,18 @@ router.put('/competition/:id/winners', validate(adminSchemas.setWinners), adminC
 router.get('/competition/:id', validate(adminSchemas.idParam), adminController.getCompetition);
 router.put('/competition/:id', validate(adminSchemas.competitionUpdate), adminController.updateCompetition);
 router.delete('/competition/:id', validate(adminSchemas.idParam), adminController.deleteCompetition);
+// Multipart, so the id is validated after multer has parsed the body.
+router.post(
+  '/competition/:id/material',
+  receiveMaterial,
+  validate(adminSchemas.idParam),
+  adminController.uploadCompetitionMaterial
+);
+router.delete(
+  '/competition/:id/material',
+  validate(adminSchemas.idParam),
+  adminController.removeCompetitionMaterial
+);
 router.get('/competition-participants/:id', validate(adminSchemas.idParam), adminController.competitionParticipants);
 router.delete('/competition-participant/:id/:studentId', validate(adminSchemas.participants), adminController.removeParticipant);
 
