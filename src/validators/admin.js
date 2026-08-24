@@ -2,6 +2,13 @@ const { z } = require('zod');
 
 const idParam = z.object({ params: z.object({ id: z.string().uuid() }) });
 
+/**
+ * Contest identity artwork an admin may attach to a competition. Kept as an
+ * allow-list so only known slugs reach the database; mirrors CONTEST_LOGOS in
+ * the client's utils/competitionDisplay.
+ */
+const CONTEST_LOGOS = ['numerava', 'lexivara', 'scivara', 'solvena', 'innovair', 'creonia'];
+
 const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
 
 const timeToMinutes = (time) => {
@@ -26,6 +33,7 @@ const competitionCreate = z.object({
     fee: z.coerce.number().min(0, 'fee must be >= 0').optional(),
     registrationDeadline: z.string().date('registrationDeadline must be YYYY-MM-DD'),
     duration: z.string().trim().min(1, 'duration is required'),
+    logo: z.enum(CONTEST_LOGOS).nullish(),
     status: z.enum(['active','inactive','closed']).optional()
   })
     .superRefine((val, ctx) => {
@@ -78,6 +86,7 @@ const competitionUpdate = z.object({
     fee: z.coerce.number().min(0, 'fee must be >= 0').optional(),
     registrationDeadline: z.string().date('registrationDeadline must be YYYY-MM-DD').optional(),
     duration: z.string().trim().min(1).optional(),
+    logo: z.enum(CONTEST_LOGOS).nullish(),
     status: z.enum(['active','inactive','closed']).optional()
   })
     .superRefine((val, ctx) => {

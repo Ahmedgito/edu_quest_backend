@@ -300,6 +300,7 @@ const createCompetition = async (req, res, next) => {
       fee,
       registrationDeadline,
       duration,
+      logo,
       status
     } = req.body;
 
@@ -310,8 +311,8 @@ const createCompetition = async (req, res, next) => {
     }
 
     const result = await query(
-      `INSERT INTO competitions (code, title, description, grade, grade_min, grade_max, subjects, start_date, start_time, end_time, venue, fee, registration_deadline, duration, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      `INSERT INTO competitions (code, title, description, grade, grade_min, grade_max, subjects, start_date, start_time, end_time, venue, fee, registration_deadline, duration, logo, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
       [
         code,
         title,
@@ -327,6 +328,7 @@ const createCompetition = async (req, res, next) => {
         fee || 0,
         registrationDeadline || null,
         duration || null,
+        logo || null,
         status || 'active'
       ]
     );
@@ -594,6 +596,8 @@ const updateCompetition = async (req, res, next) => {
     if (fields.fee !== undefined) pushSet('fee', fields.fee);
     if (fields.registrationDeadline !== undefined) pushSet('registration_deadline', fields.registrationDeadline);
     if (fields.duration !== undefined) pushSet('duration', fields.duration);
+    // null clears the attached badge, so the competition falls back to its subject icon.
+    if (fields.logo !== undefined) pushSet('logo', fields.logo || null);
     if (fields.status !== undefined) pushSet('status', fields.status);
 
     const hasGradeUpdates =

@@ -314,3 +314,7 @@ CREATE INDEX IF NOT EXISTS idx_competitions_grade ON competitions(grade);
 CREATE INDEX IF NOT EXISTS idx_competitions_grade_min ON competitions(grade_min);
 CREATE INDEX IF NOT EXISTS idx_competitions_grade_max ON competitions(grade_max);
 CREATE INDEX IF NOT EXISTS idx_participants_competition_id ON competition_participants(competition_id);
+
+-- Contest identity artwork attached to a competition (numerava, lexivara, ...).
+-- Stored as a slug; the frontend maps it to the badge image.
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS logo TEXT;
