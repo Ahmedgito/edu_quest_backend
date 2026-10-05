@@ -88,7 +88,13 @@ async function sendCertificateEmailsBatched({ competition, rows }) {
   const sent = [];
   const failures = [];
 
-  const jobs = rows.map((row) => {
+  // A participant with no address at all cannot be mailed; report it rather
+  // than letting the transport reject an empty recipient.
+  rows.filter((row) => !row.email).forEach((row) => {
+    failures.push({ studentId: row.student_id, error: 'No email address on file for this student or their school' });
+  });
+
+  const jobs = rows.filter((row) => row.email).map((row) => {
     const meta = AWARDS[row.award];
     return {
       studentId: row.student_id,
@@ -96,9 +102,10 @@ async function sendCertificateEmailsBatched({ competition, rows }) {
       // from, so what gets recorded always matches what was actually sent.
       certificateType: certificateTypeForAward(row.award),
       to: row.email,
-      subject: meta
+      // A school receives one email per student, so name the student in it.
+      subject: `${meta
         ? `Congratulations — ${meta.label} in ${competition.title}`
-        : `Certificate — ${competition.title}`,
+        : `Certificate — ${competition.title}`}${row.via_school && row.name ? ` — ${row.name}` : ''}`,
       html: renderCertificateHtml({
         studentName: row.name || row.email,
         competitionTitle: competition.title,

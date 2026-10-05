@@ -327,3 +327,50 @@ ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_name TEXT;
 ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_mime TEXT;
 ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_size INT;
 ALTER TABLE competitions ADD COLUMN IF NOT EXISTS material_label TEXT;
+
+-- Early Bird pricing: early_bird_fee replaces fee up to and including
+-- early_bird_deadline (Pakistan time). Both are set together or both left NULL.
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS early_bird_fee NUMERIC(10,2);
+ALTER TABLE competitions ADD COLUMN IF NOT EXISTS early_bird_deadline DATE;
+
+-- ============================================================================
+-- SCHOOL-ENTERED STUDENTS
+--
+-- Schools no longer upload a CSV that creates student logins. A coordinator
+-- types each student's name, father's name and class into a competition's
+-- registration form, and the student is stored without an account: user_id and
+-- email stay NULL. The roster row is reused when the same child (same name,
+-- father's name and class) is entered into another competition.
+--
+-- The bulk_registration_* tables above are no longer written to; they are kept
+-- so the audit history of past uploads is not lost.
+-- ============================================================================
+ALTER TABLE students ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE students ALTER COLUMN email DROP NOT NULL;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS father_name TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_students_school_roster
+  ON students (school_id, lower(btrim(name)), lower(btrim(father_name)), class)
+  WHERE user_id IS NULL;
+
+-- Price locked when the entry was made, so a student added during Early Bird
+-- keeps the Early Bird price however late the school pays, and one added after
+-- it pays the standard fee. NULL on entries made before this existed; those are
+-- charged the competition's current price, as they always were.
+ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS unit_fee NUMERIC(10,2);
+ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS fee_tier TEXT;
+ALTER TABLE competition_participants ADD COLUMN IF NOT EXISTS added_by UUID REFERENCES users(id) ON DELETE SET NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'competition_participants_fee_tier_check') THEN
+    ALTER TABLE competition_participants
+      ADD CONSTRAINT competition_participants_fee_tier_check
+      CHECK (fee_tier IS NULL OR fee_tier IN ('early_bird','standard','free'));
+  END IF;
+END$$;
+
+-- What the payer owed for the registrations a payment covers. A school payment
+-- can mix Early Bird and standard entries, so unit_fee × student_count no longer
+-- describes it; NULL on older payments, where that product still holds.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS expected_amount NUMERIC(10,2);

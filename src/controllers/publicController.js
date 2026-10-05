@@ -2,6 +2,7 @@ const { query } = require('../db');
 const { ok, created, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
 const { resolveFeaturedCompetition } = require('../utils/featuredCompetition');
+const { withPricing } = require('../utils/competitionPricing');
 const { resolveMaterialPath, materialExists } = require('../services/competitionMaterialStorage');
 
 const listCompetitions = async (req, res, next) => {
@@ -53,7 +54,7 @@ const listCompetitions = async (req, res, next) => {
     );
 
     return ok(res, {
-      items: listResult.rows,
+      items: listResult.rows.map(withPricing),
       pagination: { page, limit, total: totalResult.rows[0].count, totalPages: Math.ceil(totalResult.rows[0].count / limit) }
     });
   } catch (err) {
@@ -107,7 +108,7 @@ const searchCompetitions = async (req, res, next) => {
     );
 
     return ok(res, {
-      items: listResult.rows,
+      items: listResult.rows.map(withPricing),
       pagination: { page, limit, total: totalResult.rows[0].count, totalPages: Math.ceil(totalResult.rows[0].count / limit) }
     });
   } catch (err) {
@@ -122,7 +123,7 @@ const competitionDetail = async (req, res, next) => {
     if (result.rowCount === 0) {
       return fail(res, 404, 'Competition not found');
     }
-    return ok(res, result.rows[0]);
+    return ok(res, withPricing(result.rows[0]));
   } catch (err) {
     return next(err);
   }

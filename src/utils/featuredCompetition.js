@@ -1,4 +1,5 @@
 const { query } = require('../db');
+const { withPricing } = require('./competitionPricing');
 
 /**
  * Resolve the competition an announcement should feature.
@@ -13,7 +14,7 @@ const resolveFeaturedCompetition = async (competitionId) => {
   if (competitionId) {
     const pinned = await query('SELECT * FROM competitions WHERE id = $1', [competitionId]);
     if (pinned.rowCount > 0) {
-      return pinned.rows[0];
+      return withPricing(pinned.rows[0]);
     }
   }
 
@@ -26,7 +27,7 @@ const resolveFeaturedCompetition = async (competitionId) => {
      LIMIT 1`
   );
 
-  return upcoming.rows[0] || null;
+  return withPricing(upcoming.rows[0]) || null;
 };
 
 module.exports = { resolveFeaturedCompetition };

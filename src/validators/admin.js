@@ -11,6 +11,11 @@ const CONTEST_LOGOS = ['numerava', 'lexivara', 'scivara', 'solvena', 'innovair',
 
 const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
 
+// Early Bird fields arrive as '' from an emptied form input; that means "none".
+const blankToNull = (v) => (v === '' ? null : v);
+const earlyBirdFee = z.preprocess(blankToNull, z.coerce.number().min(0, 'earlyBirdFee must be >= 0').nullable().optional());
+const earlyBirdDeadline = z.preprocess(blankToNull, z.string().date('earlyBirdDeadline must be YYYY-MM-DD').nullable().optional());
+
 const timeToMinutes = (time) => {
   if (!time || typeof time !== 'string' || !timeRegex.test(time)) return null;
   const [h, m] = time.split(':');
@@ -31,6 +36,8 @@ const competitionCreate = z.object({
     endTime: z.string().regex(timeRegex, 'endTime must be HH:mm'),
     venue: z.string().trim().min(2, 'venue is required'),
     fee: z.coerce.number().min(0, 'fee must be >= 0').optional(),
+    earlyBirdFee,
+    earlyBirdDeadline,
     registrationDeadline: z.string().date('registrationDeadline must be YYYY-MM-DD'),
     duration: z.string().trim().min(1, 'duration is required'),
     logo: z.enum(CONTEST_LOGOS).nullish(),
@@ -84,6 +91,8 @@ const competitionUpdate = z.object({
     endTime: z.string().regex(timeRegex, 'endTime must be HH:mm').optional(),
     venue: z.string().trim().min(2).optional(),
     fee: z.coerce.number().min(0, 'fee must be >= 0').optional(),
+    earlyBirdFee,
+    earlyBirdDeadline,
     registrationDeadline: z.string().date('registrationDeadline must be YYYY-MM-DD').optional(),
     duration: z.string().trim().min(1).optional(),
     logo: z.enum(CONTEST_LOGOS).nullish(),

@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const { query } = require('../db');
 const { env } = require('../config/env');
 const { ok, fail } = require('../utils/response');
+const { withPricing } = require('../utils/competitionPricing');
 const { getPagination } = require('../utils/pagination');
 const { initialPaymentStatus } = require('./paymentController');
 
@@ -159,7 +160,7 @@ const myCompetitions = async (req, res, next) => {
        ORDER BY cp.joined_at DESC`,
       [req.user.id]
     );
-    return ok(res, result.rows);
+    return ok(res, result.rows.map(withPricing));
   } catch (err) {
     return next(err);
   }
@@ -228,7 +229,7 @@ const availableCompetitions = async (req, res, next) => {
     );
 
     return ok(res, {
-      items: listResult.rows,
+      items: listResult.rows.map(withPricing),
       pagination: { page, limit, total: totalResult.rows[0].count, totalPages: Math.ceil(totalResult.rows[0].count / limit) }
     });
   } catch (err) {
@@ -251,7 +252,7 @@ const joinCompetition = async (req, res, next) => {
       return fail(res, 404, 'Competition not found');
     }
 
-    const competition = competitionResult.rows[0];
+    const competition = withPricing(competitionResult.rows[0]);
     const competitionId = competition.id;
     if (competition.status !== 'active') {
       return fail(res, 400, 'Competition is not open');

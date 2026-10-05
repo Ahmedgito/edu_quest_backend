@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { query, withTransaction } = require('../db');
 const { ok, created, fail } = require('../utils/response');
 const { getPagination } = require('../utils/pagination');
+const { withPricing, participantFeeSql } = require('../utils/competitionPricing');
 const {
   saveScreenshot,
   deleteScreenshot,
@@ -127,7 +128,8 @@ const studentDuePayments = async (req, res, next) => {
     const studentId = studentRes.rows[0].id;
 
     const result = await query(
-      `SELECT c.id AS competition_id, c.code, c.title, c.fee, c.start_date, c.registration_deadline,
+      `SELECT c.id AS competition_id, c.code, c.title, c.fee, c.early_bird_fee, c.early_bird_deadline,
+              c.start_date, c.registration_deadline,
               cp.payment_status, cp.joined_at,
               p.id AS payment_id, p.status AS payment_state, p.reference_code, p.amount,
               p.rejection_reason, p.created_at AS submitted_at, p.payer_type
@@ -139,7 +141,7 @@ const studentDuePayments = async (req, res, next) => {
       [studentId]
     );
 
-    return ok(res, result.rows);
+    return ok(res, result.rows.map(withPricing));
   } catch (err) {
     return next(err);
   }
@@ -158,7 +160,7 @@ const submitStudentPayment = async (req, res, next) => {
     // both — binding it straight to the uuid column breaks the code lookup.
     const compRes = await query('SELECT * FROM competitions WHERE id::text = $1 OR code = $1', [competitionId]);
     if (compRes.rowCount === 0) return fail(res, 404, 'Competition not found');
-    const competition = compRes.rows[0];
+    const competition = withPricing(compRes.rows[0]);
 
     if (!isPaid(competition)) {
       return fail(res, 400, 'This competition is free — no payment is required');
@@ -211,6 +213,7 @@ const submitStudentPayment = async (req, res, next) => {
           'submitted_by',
           'amount',
           'unit_fee',
+          'expected_amount',
           'student_count',
           'payer_note',
           'screenshot_path',
@@ -223,6 +226,7 @@ const submitStudentPayment = async (req, res, next) => {
           student.id,
           req.user.id,
           amount,
+          feeOf(competition),
           feeOf(competition),
           1,
           payerNote || null,
@@ -262,7 +266,10 @@ const getSchoolForUser = async (userId) => {
   return result.rows[0] || null;
 };
 
-/** This school's students who have joined a competition and still owe payment. */
+/**
+ * This school's paid-competition entries that have not taken place yet, each
+ * priced at what that entry owes — the fee locked when it was added.
+ */
 const schoolPayableStudents = async (req, res, next) => {
   try {
     const school = await getSchoolForUser(req.user.id);
@@ -277,23 +284,28 @@ const schoolPayableStudents = async (req, res, next) => {
     }
 
     const result = await query(
-      `SELECT c.id AS competition_id, c.code, c.title, c.fee, c.start_date, c.registration_deadline,
-              s.id AS student_id, s.name, s.email, s.class,
-              cp.payment_status, cp.joined_at,
+      `SELECT c.id AS competition_id, c.code, c.title, c.fee, c.early_bird_fee, c.early_bird_deadline,
+              c.start_date, c.registration_deadline,
+              s.id AS student_id, s.name, s.father_name, s.email, s.class,
+              cp.payment_status, cp.joined_at, cp.fee_tier,
+              ${participantFeeSql('cp', 'c')} AS unit_fee,
               p.reference_code, p.status AS payment_state, p.rejection_reason
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
        JOIN competitions c ON c.id = cp.competition_id
        LEFT JOIN payments p ON p.id = cp.payment_id
        WHERE s.school_id = $1
-         AND c.fee > 0
+         AND cp.payment_status <> 'not_required'
          AND NOT (c.start_date IS NOT NULL AND c.start_date < CURRENT_DATE)
          ${competitionFilter}
-       ORDER BY c.start_date ASC NULLS LAST, s.name ASC`,
+       ORDER BY c.start_date ASC NULLS LAST, cp.joined_at ASC, s.name ASC`,
       params
     );
 
-    return ok(res, result.rows);
+    return ok(
+      res,
+      result.rows.map((row) => ({ ...withPricing(row), unit_fee: Number(row.unit_fee || 0) }))
+    );
   } catch (err) {
     return next(err);
   }
@@ -344,11 +356,8 @@ const submitSchoolPayment = async (req, res, next) => {
     // both — binding it straight to the uuid column breaks the code lookup.
     const compRes = await query('SELECT * FROM competitions WHERE id::text = $1 OR code = $1', [competitionId]);
     if (compRes.rowCount === 0) return fail(res, 404, 'Competition not found');
-    const competition = compRes.rows[0];
+    const competition = withPricing(compRes.rows[0]);
 
-    if (!isPaid(competition)) {
-      return fail(res, 400, 'This competition is free — no payment is required');
-    }
     if (competition.start_date) {
       const ended = await query('SELECT ($1::date < CURRENT_DATE) AS ended', [competition.start_date]);
       if (ended.rows[0]?.ended) {
@@ -357,11 +366,14 @@ const submitSchoolPayment = async (req, res, next) => {
     }
 
     // Every selected student must belong to this school, be registered for the
-    // competition, and not already be covered by a live payment.
+    // competition, and not already be covered by a live payment. Each owes the
+    // price locked when it was entered, so Early Bird and standard entries can
+    // share one transfer.
     const eligible = await query(
-      `SELECT cp.student_id, cp.payment_status
+      `SELECT cp.student_id, cp.payment_status, ${participantFeeSql('cp', 'c')} AS unit_fee
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
+       JOIN competitions c ON c.id = cp.competition_id
        WHERE cp.competition_id = $1
          AND s.school_id = $2
          AND cp.student_id = ANY($3::uuid[])`,
@@ -381,6 +393,22 @@ const submitSchoolPayment = async (req, res, next) => {
       );
     }
 
+    const free = eligible.rows.filter((r) => r.payment_status === 'not_required');
+    if (free.length > 0) {
+      return fail(res, 400, `${free.length} selected student(s) were entered free of charge — no payment is required`);
+    }
+
+    const fees = eligible.rows.map((r) => Number(r.unit_fee || 0));
+    const expectedAmount = Math.round(fees.reduce((sum, fee) => sum + fee, 0) * 100) / 100;
+    if (expectedAmount <= 0) {
+      return fail(res, 400, 'Nothing is owed for the selected students');
+    }
+    // unit_fee only describes a payment whose entries all cost the same; a
+    // mixed one records the average and relies on expected_amount.
+    const unitFee = fees.every((fee) => fee === fees[0])
+      ? fees[0]
+      : Math.round((expectedAmount / fees.length) * 100) / 100;
+
     stored = await saveScreenshot(req.file);
 
     const payment = await withTransaction(async (client) => {
@@ -393,6 +421,7 @@ const submitSchoolPayment = async (req, res, next) => {
           'submitted_by',
           'amount',
           'unit_fee',
+          'expected_amount',
           'student_count',
           'payer_note',
           'screenshot_path',
@@ -405,7 +434,8 @@ const submitSchoolPayment = async (req, res, next) => {
           school.id,
           req.user.id,
           amount,
-          feeOf(competition),
+          unitFee,
+          expectedAmount,
           studentIds.length,
           payerNote || null,
           stored.path,
@@ -550,9 +580,12 @@ const getPayment = async (req, res, next) => {
     if (result.rowCount === 0) return fail(res, 404, 'Payment not found');
 
     const covered = await query(
-      `SELECT cp.student_id, cp.payment_status, s.name, s.email, s.class, s.school_name
+      `SELECT cp.student_id, cp.payment_status, cp.fee_tier, cp.joined_at,
+              ${participantFeeSql('cp', 'c')} AS unit_fee,
+              s.name, s.father_name, s.email, s.class, s.school_name
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
+       JOIN competitions c ON c.id = cp.competition_id
        WHERE cp.payment_id = $1
        ORDER BY s.name ASC`,
       [id]

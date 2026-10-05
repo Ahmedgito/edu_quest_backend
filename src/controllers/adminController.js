@@ -22,6 +22,7 @@ const NEEDS_CERTIFICATE_SQL = `(
   OR cp.certificate_type IS DISTINCT FROM COALESCE(cp.award, 'participation')
 )`;
 const { resolveFeaturedCompetition } = require('../utils/featuredCompetition');
+const { withPricing, toDateOnly, participantFeeSql } = require('../utils/competitionPricing');
 
 const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/;
 
@@ -31,10 +32,20 @@ const timeToMinutes = (time) => {
   return Number(h) * 60 + Number(m);
 };
 
-const validateCompetitionRules = ({ startDate, registrationDeadline, startTime, endTime }) => {
+const validateCompetitionRules = ({
+  startDate,
+  registrationDeadline,
+  startTime,
+  endTime,
+  fee,
+  earlyBirdFee,
+  earlyBirdDeadline
+}) => {
+  // On update, unchanged dates come from the row as Date objects; read the
+  // calendar date out of them before parsing.
   if (startDate && registrationDeadline) {
-    const start = new Date(`${startDate}T00:00:00.000Z`);
-    const deadline = new Date(`${registrationDeadline}T00:00:00.000Z`);
+    const start = new Date(`${toDateOnly(startDate)}T00:00:00.000Z`);
+    const deadline = new Date(`${toDateOnly(registrationDeadline)}T00:00:00.000Z`);
     if (Number.isNaN(start.getTime()) || Number.isNaN(deadline.getTime())) {
       return 'Invalid competition dates';
     }
@@ -51,6 +62,21 @@ const validateCompetitionRules = ({ startDate, registrationDeadline, startTime, 
     }
     if (endMinutes <= startMinutes) {
       return 'End time must be after start time';
+    }
+  }
+
+  const hasEarlyBirdFee = earlyBirdFee !== null && earlyBirdFee !== undefined;
+  const hasEarlyBirdDeadline = Boolean(earlyBirdDeadline);
+  if (hasEarlyBirdFee !== hasEarlyBirdDeadline) {
+    return 'Set both the Early Bird fee and its end date, or leave both empty';
+  }
+  if (hasEarlyBirdFee) {
+    if (Number(earlyBirdFee) >= Number(fee || 0)) {
+      return 'Early Bird fee must be lower than the standard fee';
+    }
+    const deadline = toDateOnly(registrationDeadline);
+    if (deadline && toDateOnly(earlyBirdDeadline) > deadline) {
+      return 'Early Bird must end on or before the registration deadline';
     }
   }
 
@@ -304,6 +330,8 @@ const createCompetition = async (req, res, next) => {
       endTime,
       venue,
       fee,
+      earlyBirdFee,
+      earlyBirdDeadline,
       registrationDeadline,
       duration,
       logo,
@@ -311,14 +339,22 @@ const createCompetition = async (req, res, next) => {
     } = req.body;
 
     const gradeInfo = normalizeGradeRange({ grade, gradeMin, gradeMax });
-    const dateTimeError = validateCompetitionRules({ startDate, registrationDeadline, startTime, endTime });
+    const dateTimeError = validateCompetitionRules({
+      startDate,
+      registrationDeadline,
+      startTime,
+      endTime,
+      fee,
+      earlyBirdFee,
+      earlyBirdDeadline
+    });
     if (dateTimeError) {
       return fail(res, 400, dateTimeError);
     }
 
     const result = await query(
-      `INSERT INTO competitions (code, title, description, grade, grade_min, grade_max, subjects, start_date, start_time, end_time, venue, fee, registration_deadline, duration, logo, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      `INSERT INTO competitions (code, title, description, grade, grade_min, grade_max, subjects, start_date, start_time, end_time, venue, fee, early_bird_fee, early_bird_deadline, registration_deadline, duration, logo, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
       [
         code,
         title,
@@ -332,13 +368,15 @@ const createCompetition = async (req, res, next) => {
         endTime || null,
         venue || null,
         fee || 0,
+        earlyBirdFee ?? null,
+        earlyBirdDeadline || null,
         registrationDeadline || null,
         duration || null,
         logo || null,
         status || 'active'
       ]
     );
-    return created(res, result.rows[0], 'Competition created');
+    return created(res, withPricing(result.rows[0]), 'Competition created');
   } catch (err) {
     return next(err);
   }
@@ -417,7 +455,7 @@ const setCompetitionWinners = async (req, res, next) => {
     });
 
     const updated = await query(
-      `SELECT cp.competition_id, cp.student_id, s.name, s.email, s.class, s.school_name, cp.joined_at,
+      `SELECT cp.competition_id, cp.student_id, s.name, s.father_name, s.email, s.class, s.school_name, cp.joined_at,
               cp.certificate_sent_at, cp.award, cp.certificate_type
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
@@ -470,9 +508,15 @@ const sendCompetitionCertificates = async (req, res, next) => {
     }
 
     const pending = await query(
-      `SELECT cp.student_id, cp.award, s.name, s.email
+      // Students entered by their school have no email of their own; their
+      // certificate goes to the school coordinator's account instead.
+      `SELECT cp.student_id, cp.award, s.name,
+              COALESCE(NULLIF(BTRIM(s.email), ''), school_user.email) AS email,
+              (NULLIF(BTRIM(s.email), '') IS NULL) AS via_school
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
+       LEFT JOIN schools sch ON sch.id = s.school_id
+       LEFT JOIN users school_user ON school_user.id = sch.user_id
        WHERE ${where.join(' AND ')}
        ORDER BY
          CASE cp.award WHEN 'first' THEN 1 WHEN 'second' THEN 2 WHEN 'third' THEN 3 ELSE 4 END,
@@ -552,7 +596,7 @@ const listCompetitions = async (req, res, next) => {
     );
 
     return ok(res, {
-      items: listResult.rows,
+      items: listResult.rows.map(withPricing),
       pagination: { page, limit, total: totalResult.rows[0].count, totalPages: Math.ceil(totalResult.rows[0].count / limit) }
     });
   } catch (err) {
@@ -567,7 +611,7 @@ const getCompetition = async (req, res, next) => {
     if (result.rowCount === 0) {
       return fail(res, 404, 'Competition not found');
     }
-    return ok(res, result.rows[0]);
+    return ok(res, withPricing(result.rows[0]));
   } catch (err) {
     return next(err);
   }
@@ -600,6 +644,9 @@ const updateCompetition = async (req, res, next) => {
     if (fields.endTime !== undefined) pushSet('end_time', fields.endTime);
     if (fields.venue !== undefined) pushSet('venue', fields.venue);
     if (fields.fee !== undefined) pushSet('fee', fields.fee);
+    // null clears Early Bird pricing.
+    if (fields.earlyBirdFee !== undefined) pushSet('early_bird_fee', fields.earlyBirdFee);
+    if (fields.earlyBirdDeadline !== undefined) pushSet('early_bird_deadline', fields.earlyBirdDeadline);
     if (fields.registrationDeadline !== undefined) pushSet('registration_deadline', fields.registrationDeadline);
     if (fields.duration !== undefined) pushSet('duration', fields.duration);
     // null clears the attached badge, so the competition falls back to its subject icon.
@@ -627,7 +674,10 @@ const updateCompetition = async (req, res, next) => {
       startDate: fields.startDate !== undefined ? fields.startDate : current.start_date,
       registrationDeadline: fields.registrationDeadline !== undefined ? fields.registrationDeadline : current.registration_deadline,
       startTime: fields.startTime !== undefined ? fields.startTime : current.start_time,
-      endTime: fields.endTime !== undefined ? fields.endTime : current.end_time
+      endTime: fields.endTime !== undefined ? fields.endTime : current.end_time,
+      fee: fields.fee !== undefined ? fields.fee : current.fee,
+      earlyBirdFee: fields.earlyBirdFee !== undefined ? fields.earlyBirdFee : current.early_bird_fee,
+      earlyBirdDeadline: fields.earlyBirdDeadline !== undefined ? fields.earlyBirdDeadline : current.early_bird_deadline
     };
     const dateTimeError = validateCompetitionRules(merged);
     if (dateTimeError) {
@@ -641,7 +691,7 @@ const updateCompetition = async (req, res, next) => {
       params
     );
 
-    return ok(res, result.rows[0], 'Competition updated');
+    return ok(res, withPricing(result.rows[0]), 'Competition updated');
   } catch (err) {
     return next(err);
   }
@@ -664,11 +714,16 @@ const competitionParticipants = async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
-      `SELECT cp.competition_id, cp.student_id, s.name, s.email, s.class, s.school_name, cp.joined_at,
+      `SELECT cp.competition_id, cp.student_id, s.name, s.father_name, s.email, s.class,
+              COALESCE(sch.school_name, s.school_name) AS school_name, cp.joined_at,
               cp.certificate_sent_at, cp.award, cp.certificate_type,
-              cp.payment_status, p.reference_code AS payment_reference, p.payer_type AS payment_payer_type
+              cp.payment_status, cp.fee_tier, ${participantFeeSql('cp', 'c')} AS unit_fee,
+              (s.user_id IS NULL) AS entered_by_school,
+              p.reference_code AS payment_reference, p.payer_type AS payment_payer_type
        FROM competition_participants cp
        JOIN students s ON s.id = cp.student_id
+       JOIN competitions c ON c.id = cp.competition_id
+       LEFT JOIN schools sch ON sch.id = s.school_id
        LEFT JOIN payments p ON p.id = cp.payment_id
        WHERE cp.competition_id = $1
        ORDER BY cp.joined_at DESC`,
@@ -794,7 +849,7 @@ const uploadCompetitionMaterial = async (req, res, next) => {
     const previous = existing.rows[0].material_path;
     if (previous && previous !== saved.path) await deleteMaterial(previous);
 
-    return ok(res, result.rows[0], 'Material uploaded');
+    return ok(res, withPricing(result.rows[0]), 'Material uploaded');
   } catch (err) {
     if (saved) await deleteMaterial(saved.path);
     return next(err);
@@ -817,7 +872,7 @@ const removeCompetitionMaterial = async (req, res, next) => {
     );
 
     await deleteMaterial(existing.rows[0].material_path);
-    return ok(res, result.rows[0], 'Material removed');
+    return ok(res, withPricing(result.rows[0]), 'Material removed');
   } catch (err) {
     return next(err);
   }
